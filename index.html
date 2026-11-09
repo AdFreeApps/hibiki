@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>響きメーター</title>
+<meta name="description" content="声の 3kHz あたりの響き（歌い手のフォルマント）を見るメーター">
+<meta name="theme-color" content="#f2f3f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f141c" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* layout: one column instrument panel; readout on top, spectrum in the middle, the last 15 seconds below, notes at the end */
+:root {
+  --bg: #f2f3f6; --panel: #ffffff; --fg: #1b2230; --muted: #5b6475; --line: #d8dce4; --grid: #e7e9ef;
+  --brass: #9c6f14; --brass-soft: rgba(196, 150, 52, .20);
+  --wave: #2b5c91; --wave-fill: rgba(43, 92, 145, .14); --target: #7a8396;
+  --low: #a05a5a; --mid: #a68414; --good: #2e7d50;
+  --low-soft: rgba(160, 90, 90, .14); --mid-soft: rgba(166, 132, 20, .14); --good-soft: rgba(46, 125, 80, .16);
+  --f-display: "Shippori Mincho B1", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --f-body: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
+  --f-num: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141c; --panel: #161d28; --fg: #e5e8ee; --muted: #98a1b1; --line: #2a3342; --grid: #1f2733;
+    --brass: #dcac48; --brass-soft: rgba(220, 172, 72, .17);
+    --wave: #82b4e6; --wave-fill: rgba(130, 180, 230, .14); --target: #8b93a3;
+    --low: #d48f8f; --mid: #d8b84a; --good: #5fc48e;
+    --low-soft: rgba(212, 143, 143, .13); --mid-soft: rgba(216, 184, 74, .13); --good-soft: rgba(95, 196, 142, .14);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141c; --panel: #161d28; --fg: #e5e8ee; --muted: #98a1b1; --line: #2a3342; --grid: #1f2733;
+  --brass: #dcac48; --brass-soft: rgba(220, 172, 72, .17);
+  --wave: #82b4e6; --wave-fill: rgba(130, 180, 230, .14); --target: #8b93a3;
+  --low: #d48f8f; --mid: #d8b84a; --good: #5fc48e;
+  --low-soft: rgba(212, 143, 143, .13); --mid-soft: rgba(216, 184, 74, .13); --good-soft: rgba(95, 196, 142, .14);
+  color-scheme: dark;
+}
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.65 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: max(14px, env(safe-area-inset-top, 0px)) max(28px, env(safe-area-inset-bottom, 0px));
+}
+main { max-width: 720px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font: 600 1.6rem/1.2 var(--f-display); margin: 0; letter-spacing: .04em; text-wrap: balance; }
+.tag { color: var(--muted); font-size: .85rem; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+
+/* readout */
+.readout { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; align-items: center; }
+.big { font: 600 3.1rem/1 var(--f-num); font-variant-numeric: tabular-nums; letter-spacing: -.02em; white-space: nowrap; }
+.big .unit { font-size: 1rem; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
+.label { font-size: .78rem; color: var(--muted); letter-spacing: .06em; }
+.side { display: grid; gap: 6px; min-width: 0; }
+.pill { justify-self: start; font-size: .82rem; font-weight: 600; padding: 2px 10px; border-radius: 99px; border: 1px solid currentColor; }
+.pill.low { color: var(--low); } .pill.mid { color: var(--mid); } .pill.good { color: var(--good); } .pill.none { color: var(--muted); }
+.meter { grid-column: 1 / -1; position: relative; height: 14px; border-radius: 7px; overflow: hidden; display: flex; margin-top: 4px; }
+.meter span { height: 100%; }
+.meter .z1 { background: var(--low-soft); flex: 17; } .meter .z2 { background: var(--mid-soft); flex: 10; } .meter .z3 { background: var(--good-soft); flex: 18; }
+.needle { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1.5px; background: var(--fg); border-radius: 2px; transition: left .08s linear; }
+.scale { grid-column: 1 / -1; display: flex; justify-content: space-between; font: .72rem var(--f-num); color: var(--muted); }
+.sub { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .82rem; color: var(--muted); }
+.sub b { font: 600 .85rem var(--f-num); color: var(--fg); font-variant-numeric: tabular-nums; }
+.badge { justify-self: start; font-size: .72rem; color: var(--brass); border: 1px solid var(--brass); border-radius: 4px; padding: 0 6px; }
+
+/* charts */
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.chart-head h2 { font-size: .9rem; margin: 0; font-weight: 600; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: .75rem; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 0; vertical-align: middle; margin-right: 4px; border-top: 2px solid; }
+.legend .l-now { border-color: var(--wave); border-top-width: 3px; }
+.legend .l-raw { border-color: var(--wave); border-top-width: 1px; opacity: .55; } .legend .l-target { border-color: var(--target); border-top-style: dashed; }
+.legend .l-band { border: 0; height: 10px; background: var(--brass-soft); outline: 1px solid var(--brass); }
+canvas { display: block; width: 100%; }
+#spec { height: 240px; } #hist { height: 110px; }
+
+/* controls */
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button { font: 600 .95rem var(--f-body); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+button.primary { background: var(--brass); border-color: var(--brass); color: var(--panel); }
+button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 9px 12px; font-weight: 500; }
+.seg button[aria-pressed="true"] { background: var(--brass-soft); color: var(--fg); }
+.mic { font-size: .8rem; color: var(--muted); }
+.mic b { color: var(--fg); font-weight: 600; }
+.mic .warn { color: var(--low); }
+.msg { font-size: .85rem; color: var(--low); }
+
+/* notes */
+.notes { display: grid; gap: 10px; font-size: .88rem; }
+.notes h2 { font-size: .9rem; margin: 0 0 2px; }
+.notes p { margin: 0; max-width: 65ch; }
+.notes code { font-family: var(--f-num); font-size: .85em; }
+@media (max-width: 460px) { .big { font-size: 2.6rem; } #spec { height: 210px; } }
+@media (prefers-reduced-motion: reduce) { .needle { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>響きメーター</h1>
+    <span class="tag">声の 3kHz あたりの響きを見る</span>
+  </header>
+
+  <section class="panel readout" aria-live="off">
+    <div>
+      <div class="label">3kHz 帯の山の高さ</div>
+      <div class="big"><span id="spr">−17</span><span class="unit">dB</span></div>
+    </div>
+    <div class="side">
+      <span class="pill good" id="zone">響いている</span>
+      <span id="modeBadge" class="badge">見本の声</span>
+    </div>
+    <div class="meter" aria-hidden="true"><span class="z1"></span><span class="z2"></span><span class="z3"></span><div class="needle" id="needle" style="left:62%"></div></div>
+    <div class="scale" aria-hidden="true"><span>−45</span><span>−28</span><span>−18</span><span>0 dB</span></div>
+    <div class="sub">
+      <span>いちばん強い成分 <b id="peakHz">220 Hz</b></span>
+      <span>音量 <b id="level">—</b></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="chart-head">
+      <h2>いまの声の形</h2>
+      <div class="legend"><span><i class="l-raw"></i>いまの声</span><span><i class="l-now"></i>山の頂上をつないだ線</span><span><i class="l-target"></i>目標の形（目安）</span><span><i class="l-band"></i>2.5〜3.5kHz</span></div>
+    </div>
+    <canvas id="spec" aria-label="周波数ごとの強さのグラフ"></canvas>
+  </section>
+
+  <section class="panel">
+    <div class="chart-head">
+      <h2>この15秒</h2>
+      <div class="legend"><span>上にいくほど響いている</span></div>
+    </div>
+    <canvas id="hist" aria-label="3kHz帯の山の高さの、15秒間の変化"></canvas>
+  </section>
+
+  <section class="controls">
+    <button id="startBtn" class="primary" type="button">はじめる</button>
+    <button id="testBtn" type="button" aria-pressed="false">テスト音</button>
+    <div class="seg" role="group" aria-label="表示する範囲">
+      <button id="rangeVoice" type="button" aria-pressed="true">声 80Hz〜8kHz</button>
+      <button id="rangeWide" type="button" aria-pressed="false">広く 40Hz〜20kHz</button>
+    </div>
+  </section>
+  <div id="micInfo" class="mic">マイクの状態は「はじめる」のあとに出ます。</div>
+  <div id="msg" class="msg" hidden></div>
+
+  <section class="panel notes">
+    <div>
+      <h2>点線と数字について</h2>
+      <p>声は、歌っている高さの整数倍に細い山（倍音）が並びます。見るのは山の頂上をつないだ太い線で、谷の深さは気にしなくて大丈夫です。鍛えた歌い手の声は、太い線が 2kHz 手前で一度下がり、2.5〜3.5kHz でもう一度持ち上がります（歌い手のフォルマント）。点線はその形の目安で、太い線が金色の帯で点線より上にあれば、よく響いています。数字は「2〜4kHz のいちばん高い山」から「2kHz までのいちばん高い山」を引いたものです。高さは母音、音の高さ、マイクで変わるので、人と比べず、さっきの自分の声と比べてください。</p>
+    </div>
+    <div>
+      <h2>テスト音</h2>
+      <p>ノコギリ波から作った「あー」に近い音を、鳴らさずにメーターだけに流します。押すたびに「響きなし」と「響きあり」が切り替わり、3kHz の山がどう見えるかを比べられます。</p>
+    </div>
+    <div>
+      <h2>スマホのマイク</h2>
+      <p>電話やビデオ通話のアプリは、声を聞き取りやすくするために、エコー除去・ノイズ除去・自動音量をかけます。続く高い音（風鈴など）は「雑音」として消されやすいです。このページはそれを全部切るように頼み、実際にどうなったかを上に出します。風鈴を試すときは「広く」にしてください。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const FFT = 8192, HIST_MS = 15000, GATE_DBFS = -55;
+  const Z_LOW = -28, Z_GOOD = -18, M_MIN = -45, M_MAX = 0;
+  const RANGES = { voice: [80, 8000], wide: [40, 20000] };
+
+  const state = {
+    mode: 'sample', ctx: null, analyser: null, stream: null, src: null, test: null, testRing: true,
+    range: 'voice', buf: null, tbuf: null, binHz: 48000 / FFT, sprEma: null, hist: [], quietSince: 0,
+    wake: null, raf: 0,
+  };
+
+  // ---------- the target shape (dB below the strongest peak), a rough guide ----------
+  const TARGET = [[40, -20], [80, -6], [150, 0], [600, -2], [1000, -10], [1800, -22], [2800, -14], [3500, -18], [5000, -32], [8000, -45], [20000, -70]];
+  function targetDb(f) {
+    if (f <= TARGET[0][0]) return TARGET[0][1];
+    for (let i = 1; i < TARGET.length; i++) {
+      if (f <= TARGET[i][0]) {
+        const [f0, d0] = TARGET[i - 1], [f1, d1] = TARGET[i];
+        const t = (Math.log(f) - Math.log(f0)) / (Math.log(f1) - Math.log(f0));
+        return d0 + (d1 - d0) * (1 - Math.cos(Math.PI * t)) / 2;
+      }
+    }
+    return TARGET[TARGET.length - 1][1];
+  }
+
+  // ---------- sample spectrum shown before the mic starts (a sung "ah" at 220 Hz, built from the target) ----------
+  function makeSample() {
+    const n = FFT / 2, buf = new Float32Array(n), f0 = 220;
+    let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const jit = []; for (let k = 0; k < 120; k++) jit.push((rnd() - .5) * 5);
+    for (let i = 0; i < n; i++) {
+      const f = i * state.binHz, k = Math.max(1, Math.round(f / f0)), h = k * f0;
+      const lobe = -18 + targetDb(h) + jit[k % 120] - 14 * ((f - h) / (f0 * .16)) ** 2;
+      buf[i] = Math.max(lobe, -92 + rnd() * 6);
+    }
+    return buf;
+  }
+
+  // ---------- analysis ----------
+  const bin = (f) => Math.max(0, Math.min((FFT / 2) - 1, Math.round(f / state.binHz)));
+  function bandMax(buf, f1, f2) {
+    let m = -Infinity, at = 0;
+    for (let i = bin(f1), e = bin(f2); i <= e; i++) if (buf[i] > m) { m = buf[i]; at = i; }
+    return [m, at];
+  }
+  function peakFreq(buf, i) { // parabolic interpolation around bin i
+    if (i <= 0 || i >= buf.length - 1) return i * state.binHz;
+    const a = buf[i - 1], b = buf[i], c = buf[i + 1], d = a - 2 * b + c;
+    return (i + (d ? .5 * (a - c) / d : 0)) * state.binHz;
+  }
+  function analyse(buf, levelDb) {
+    const [low] = bandMax(buf, 70, 2000);
+    const [high] = bandMax(buf, 2000, 4000);
+    const [r0, r1] = RANGES[state.range];
+    const [, pi] = bandMax(buf, Math.max(r0, 50), r1);
+    const voiced = levelDb === null || levelDb > GATE_DBFS;
+    return { spr: high - low, peak: peakFreq(buf, pi), voiced };
+  }
+
+  // ---------- colors from the CSS tokens ----------
+  let C = {};
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    for (const k of ['fg', 'muted', 'line', 'grid', 'brass', 'brass-soft', 'wave', 'wave-fill', 'target', 'low-soft', 'mid-soft', 'good-soft', 'good', 'low', 'mid', 'panel'])
+      C[k] = cs.getPropertyValue('--' + k).trim();
+    C.font = cs.getPropertyValue('--f-num').trim();
+  }
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { readColors(); if (state.mode === 'sample') drawAll(); });
+
+  function fitCanvas(cv) {
+    const r = cv.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return [g, r.width, r.height];
+  }
+
+  // ---------- spectrum ----------
+  const spec = $('#spec'), hist = $('#hist');
+  const fmtHz = (f) => f >= 1000 ? (f % 1000 ? (f / 1000).toFixed(1) : f / 1000) + 'k' : String(f);
+  function drawSpectrum(buf) {
+    const [g, W, H] = fitCanvas(spec);
+    const padL = 30, padR = 8, padT = 8, padB = 20, w = W - padL - padR, h = H - padT - padB;
+    const [f0, f1] = RANGES[state.range], lf0 = Math.log(f0), lspan = Math.log(f1) - lf0;
+    const X = (f) => padL + (Math.log(f) - lf0) / lspan * w;
+    const F = (x) => Math.exp(lf0 + (x - padL) / w * lspan);
+    const DB_MIN = -70, Y = (db) => padT + (-Math.max(DB_MIN, Math.min(0, db)) / -DB_MIN) * h;
+    g.clearRect(0, 0, W, H);
+    g.font = '10px ' + C.font; g.textBaseline = 'middle';
+
+    // 2.5–3.5 kHz band
+    g.fillStyle = C['brass-soft']; g.fillRect(X(2500), padT, X(3500) - X(2500), h);
+    g.strokeStyle = C.brass; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(X(2500) + .5, padT); g.lineTo(X(2500) + .5, padT + h); g.moveTo(X(3500) - .5, padT); g.lineTo(X(3500) - .5, padT + h); g.stroke();
+    g.fillStyle = C.brass; g.textAlign = 'center'; g.fillText('3kHz帯', (X(2500) + X(3500)) / 2, padT + 9);
+
+    // grid
+    g.strokeStyle = C.grid; g.fillStyle = C.muted; g.textAlign = 'right';
+    for (let db = 0; db >= DB_MIN; db -= 10) {
+      const y = Math.round(Y(db)) + .5; g.beginPath(); g.moveTo(padL, y); g.lineTo(padL + w, y); g.stroke();
+      if (db % 20 === 0) g.fillText(db === 0 ? '0' : '−' + (-db), padL - 4, y);
+    }
+    const ticks = state.range === 'voice' ? [100, 200, 500, 1000, 2000, 3000, 5000, 8000] : [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    for (const f of ticks) {
+      const x = Math.round(X(f)) + .5; g.beginPath(); g.moveTo(x, padT); g.lineTo(x, padT + h); g.stroke();
+      g.fillText(fmtHz(f), Math.min(Math.max(x, padL + 8), padL + w - 10), padT + h + 5);
+    }
+
+    // current spectrum, relative to its strongest peak in range
+    const [peak] = bandMax(buf, Math.max(f0, 50), f1);
+    const pts = [];
+    for (let x = padL; x <= padL + w; x++) {
+      const fa = F(x), fb = F(x + 1);
+      let v;
+      const ia = fa / state.binHz, ib = fb / state.binHz;
+      if (ib - ia < 1) { // fewer than one bin per pixel: interpolate
+        const i = Math.floor(ia), t = ia - i;
+        v = (buf[i] ?? -120) * (1 - t) + (buf[i + 1] ?? -120) * t;
+      } else { v = -Infinity; for (let i = Math.floor(ia); i <= Math.floor(ib) && i < buf.length; i++) v = Math.max(v, buf[i]); }
+      pts.push([x, Y(v - peak)]);
+    }
+    g.beginPath(); g.moveTo(padL, padT + h);
+    for (const [x, y] of pts) g.lineTo(x, y);
+    g.lineTo(padL + w, padT + h); g.closePath(); g.fillStyle = C['wave-fill']; g.fill();
+    g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+    g.globalAlpha = .45; g.strokeStyle = C.wave; g.lineWidth = 1; g.lineJoin = 'round'; g.stroke(); g.globalAlpha = 1;
+
+    // the line through the tops of the harmonics: this is what to compare with the target
+    const fund = fundamental(buf);
+    const env = [];
+    for (let x = padL; x <= padL + w; x += 2) {
+      const f = F(x);
+      if (f < fund * .85) continue;
+      const half = Math.max(.12 * f, .6 * fund);
+      const [m] = bandMax(buf, f - half, f + half);
+      env.push([x, m - peak]);
+    }
+    for (let k = 0; k < 2; k++) for (let i = 1; i < env.length - 1; i++) env[i][1] = (env[i - 1][1] + 2 * env[i][1] + env[i + 1][1]) / 4;
+    g.beginPath(); env.forEach(([x, v], i) => i ? g.lineTo(x, Y(v)) : g.moveTo(x, Y(v)));
+    g.strokeStyle = C.wave; g.lineWidth = 2.6; g.stroke();
+
+    // target guide, from the fundamental upward
+    g.beginPath(); let started = false;
+    for (let x = padL; x <= padL + w; x += 2) {
+      const f = F(x); if (f < fund * .85) continue;
+      const y = Y(targetDb(Math.max(f, 150))); started ? g.lineTo(x, y) : g.moveTo(x, y); started = true;
+    }
+    g.setLineDash([5, 4]); g.strokeStyle = C.target; g.lineWidth = 1.6; g.stroke(); g.setLineDash([]);
+  }
+
+  // the lowest strong peak between 70 Hz and 1.2 kHz, taken as the sung pitch
+  function fundamental(buf) {
+    const [m] = bandMax(buf, 70, 1200);
+    for (let i = bin(70) + 1, e = bin(1200); i < e; i++) {
+      if (buf[i] > m - 12 && buf[i] >= buf[i - 1] && buf[i] >= buf[i + 1]) return i * state.binHz;
+    }
+    return 100;
+  }
+
+  // ---------- last 15 seconds ----------
+  const HY_MIN = M_MIN, HY_MAX = M_MAX;
+  function drawHistory(now) {
+    const [g, W, H] = fitCanvas(hist);
+    const padL = 30, padR = 8, padT = 6, padB = 18, w = W - padL - padR, h = H - padT - padB;
+    const Y = (v) => padT + (HY_MAX - Math.max(HY_MIN, Math.min(HY_MAX, v))) / (HY_MAX - HY_MIN) * h;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = C['good-soft']; g.fillRect(padL, Y(HY_MAX), w, Y(Z_GOOD) - Y(HY_MAX));
+    g.fillStyle = C['mid-soft']; g.fillRect(padL, Y(Z_GOOD), w, Y(Z_LOW) - Y(Z_GOOD));
+    g.fillStyle = C['low-soft']; g.fillRect(padL, Y(Z_LOW), w, Y(HY_MIN) - Y(Z_LOW));
+    g.font = '10px ' + C.font; g.fillStyle = C.muted; g.textAlign = 'right'; g.textBaseline = 'middle';
+    for (const v of [0, Z_GOOD, Z_LOW, HY_MIN]) g.fillText(v === 0 ? '0' : '−' + (-v), padL - 4, Y(v));
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    for (let s = 0; s <= 15; s += 5) g.fillText(s === 0 ? 'いま' : s + '秒前', padL + w - s / 15 * w, padT + h + 4);
+    const X = (t) => padL + w - (now - t) / HIST_MS * w;
+    g.strokeStyle = C.wave; g.lineWidth = 2; g.lineJoin = 'round';
+    g.beginPath(); let pen = false;
+    for (const p of state.hist) {
+      if (p.v === null) { pen = false; continue; }
+      const x = X(p.t), y = Y(p.v);
+      pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true;
+    }
+    g.stroke();
+  }
+
+  // ---------- readout ----------
+  const fmtDb = (v) => (v < -0.5 ? '−' : '') + Math.abs(Math.round(v));
+  function setReadout(r, levelDb) {
+    const zone = $('#zone'), needle = $('#needle');
+    $('#level').textContent = levelDb === null ? '—' : fmtDb(levelDb) + ' dBFS';
+    if (!r.voiced) {
+      $('#spr').textContent = '—'; $('#peakHz').textContent = '—';
+      zone.className = 'pill none'; zone.textContent = '声を待っています'; needle.style.opacity = .25;
+      return;
+    }
+    const v = state.sprEma;
+    $('#spr').textContent = fmtDb(v);
+    $('#peakHz').textContent = Math.round(r.peak).toLocaleString('ja-JP') + ' Hz';
+    const [cls, txt] = v >= Z_GOOD ? ['good', '響いている'] : v >= Z_LOW ? ['mid', 'ふつう'] : ['low', 'こもり気味'];
+    zone.className = 'pill ' + cls; zone.textContent = txt;
+    needle.style.opacity = 1;
+    needle.style.left = ((Math.max(M_MIN, Math.min(M_MAX, v)) - M_MIN) / (M_MAX - M_MIN) * 100) + '%';
+  }
+
+  // ---------- loop ----------
+  function frame() {
+    state.raf = requestAnimationFrame(frame);
+    const now = performance.now();
+    state.analyser.getFloatFrequencyData(state.buf);
+    state.analyser.getFloatTimeDomainData(state.tbuf);
+    let s = 0; for (let i = 0; i < state.tbuf.length; i++) s += state.tbuf[i] * state.tbuf[i];
+    const levelDb = 10 * Math.log10(s / state.tbuf.length + 1e-12);
+    const r = analyse(state.buf, levelDb);
+    if (r.voiced && isFinite(r.spr)) {
+      state.sprEma = state.sprEma === null ? r.spr : state.sprEma + (r.spr - state.sprEma) * .2;
+      state.quietSince = 0;
+    } else if (!state.quietSince) state.quietSince = now;
+    const showQuiet = state.quietSince && now - state.quietSince > 300;
+    if (showQuiet) state.sprEma = null;
+    state.hist.push({ t: now, v: r.voiced && state.sprEma !== null ? state.sprEma : null });
+    while (state.hist.length && now - state.hist[0].t > HIST_MS) state.hist.shift();
+    setReadout({ ...r, voiced: !showQuiet && state.sprEma !== null }, levelDb);
+    drawSpectrum(state.buf);
+    drawHistory(now);
+  }
+
+  function drawAll() {
+    if (state.mode !== 'sample') return;
+    const r = analyse(state.buf, null);
+    state.sprEma = r.spr;
+    setReadout(r, null);
+    drawSpectrum(state.buf);
+    // a made-up 15 seconds for the sample view
+    const now = 0; state.hist = [];
+    for (let t = -HIST_MS; t <= 0; t += 100) {
+      const ph = (t + HIST_MS) / HIST_MS;
+      const v = ph < .08 || (ph > .45 && ph < .52) ? null : -30 + 14 * Math.min(1, ph * 1.4) + 2 * Math.sin(t / 380);
+      state.hist.push({ t, v });
+    }
+    drawHistory(now);
+  }
+
+  // ---------- audio ----------
+  async function ensureContext() {
+    if (state.ctx) { if (state.ctx.state === 'suspended') await state.ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    state.ctx = new AC();
+    await state.ctx.resume();
+    state.binHz = state.ctx.sampleRate / FFT;
+    const a = state.ctx.createAnalyser();
+    a.fftSize = FFT; a.smoothingTimeConstant = .55; a.minDecibels = -110; a.maxDecibels = 0;
+    state.analyser = a;
+    state.buf = new Float32Array(a.frequencyBinCount);
+    state.tbuf = new Float32Array(a.fftSize);
+  }
+
+  function disconnectSources() {
+    if (state.src) { try { state.src.disconnect(); } catch {} state.src = null; }
+    if (state.stream) { state.stream.getTracks().forEach((t) => t.stop()); state.stream = null; }
+    if (state.test) { try { state.test.osc.stop(); state.test.out.disconnect(); } catch {} state.test = null; }
+  }
+
+  function showMsg(t) { const m = $('#msg'); m.textContent = t; m.hidden = !t; }
+
+  async function startMic() {
+    showMsg('');
+    if (!navigator.mediaDevices?.getUserMedia) { showMsg('このブラウザではマイクが使えません。https のページで開いてください。'); return; }
+    try {
+      await ensureContext();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+      });
+      disconnectSources();
+      state.stream = stream;
+      state.src = state.ctx.createMediaStreamSource(stream);
+      state.src.connect(state.analyser);
+      state.mode = 'mic';
+      describeMic(stream.getAudioTracks()[0]);
+      run();
+    } catch (e) {
+      showMsg(e && e.name === 'NotAllowedError'
+        ? 'マイクが許可されませんでした。ブラウザの設定で、このページのマイクを許可してください。'
+        : 'マイクを開けませんでした（' + (e && e.name || e) + '）。');
+    }
+  }
+
+  function describeMic(track) {
+    const s = track.getSettings ? track.getSettings() : {};
+    const item = (name, v) => v === undefined ? `${name} <b>不明</b>` : v ? `${name} <b class="warn">オン</b>` : `${name} <b>オフ</b>`;
+    const anyOn = s.echoCancellation || s.noiseSuppression || s.autoGainControl;
+    $('#micInfo').innerHTML = 'マイクの加工：' + [item('エコー除去', s.echoCancellation), item('ノイズ除去', s.noiseSuppression), item('自動音量', s.autoGainControl)].join('・')
+      + `・サンプリング <b>${(state.ctx.sampleRate / 1000).toFixed(1)}kHz</b>`
+      + (anyOn ? '<br><span class="warn">このブラウザでは切れない加工があります。高い音が弱く出ることがあります。</span>' : '');
+  }
+
+  async function startTest() {
+    showMsg('');
+    await ensureContext();
+    disconnectSources();
+    const c = state.ctx;
+    // a sawtooth "ah" at 220 Hz: two vowel formants, a gentle roll-off, and an optional ring near 2.9 kHz
+    const osc = c.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 220;
+    const vib = c.createOscillator(), vibAmt = c.createGain(); vib.frequency.value = 5.5; vibAmt.gain.value = 2.5;
+    vib.connect(vibAmt); vibAmt.connect(osc.frequency);
+    const pk = (f, q, gain) => { const b = c.createBiquadFilter(); b.type = 'peaking'; b.frequency.value = f; b.Q.value = q; b.gain.value = gain; return b; };
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1300; lp.Q.value = .6;
+    const f1 = pk(700, 3, 9), f2 = pk(1150, 3, 6), ring = pk(2900, 4, state.testRing ? 24 : 0);
+    const out = c.createGain(); out.gain.value = .25;
+    osc.connect(f1); f1.connect(f2); f2.connect(lp); lp.connect(ring); ring.connect(out); out.connect(state.analyser);
+    osc.start(); vib.start();
+    state.test = { osc, out };
+    state.mode = 'test';
+    $('#micInfo').textContent = 'テスト音（' + (state.testRing ? '響きあり' : '響きなし') + '）を流しています。音は鳴りません。';
+    run();
+  }
+
+  async function run() {
+    $('#modeBadge').textContent = state.mode === 'mic' ? 'マイク' : 'テスト音';
+    $('#startBtn').textContent = '止める';
+    $('#testBtn').setAttribute('aria-pressed', state.mode === 'test' ? 'true' : 'false');
+    $('#testBtn').textContent = state.mode === 'test' ? (state.testRing ? 'テスト音：響きあり' : 'テスト音：響きなし') : 'テスト音';
+    state.hist = []; state.sprEma = null; state.quietSince = 0;
+    cancelAnimationFrame(state.raf); frame();
+    try { state.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+
+  function stop() {
+    cancelAnimationFrame(state.raf);
+    disconnectSources();
+    state.mode = 'stopped';
+    $('#startBtn').textContent = 'はじめる';
+    $('#testBtn').setAttribute('aria-pressed', 'false'); $('#testBtn').textContent = 'テスト音';
+    $('#modeBadge').textContent = '止めています';
+    try { state.wake?.release(); } catch {} state.wake = null;
+  }
+
+  $('#startBtn').addEventListener('click', () => (state.mode === 'mic' || state.mode === 'test') ? stop() : startMic());
+  $('#testBtn').addEventListener('click', () => { if (state.mode === 'test') state.testRing = !state.testRing; startTest(); });
+  for (const [id, r] of [['#rangeVoice', 'voice'], ['#rangeWide', 'wide']]) {
+    $(id).addEventListener('click', () => {
+      state.range = r;
+      $('#rangeVoice').setAttribute('aria-pressed', r === 'voice'); $('#rangeWide').setAttribute('aria-pressed', r === 'wide');
+      if (state.mode === 'sample') drawAll(); else if (state.mode === 'stopped') drawSpectrum(state.buf);
+    });
+  }
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && (state.mode === 'mic' || state.mode === 'test')) {
+      try { await state.ctx?.resume(); state.wake = await navigator.wakeLock?.request('screen'); } catch {}
+    }
+  });
+  new ResizeObserver(() => { if (state.mode === 'sample') drawAll(); else if (state.mode === 'stopped') { drawSpectrum(state.buf); drawHistory(performance.now()); } }).observe(spec);
+
+  // start in the sample view
+  state.buf = makeSample();
+  drawAll();
+})();
+</script>
+</body>
+</html>
