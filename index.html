@@ -158,6 +158,7 @@ button:disabled { opacity: .45; cursor: default; }
       <button id="rangeVoice" type="button" aria-pressed="true">声 80Hz〜8kHz</button>
       <button id="rangeWide" type="button" aria-pressed="false">広く 40Hz〜20kHz</button>
     </div>
+    <button id="reloadBtn" type="button" title="読み込み直す" aria-label="読み込み直す">↻</button>
   </section>
   <div id="micInfo" class="mic">マイクの状態は「はじめる」のあとに出ます。</div>
   <div id="msg" class="msg" hidden></div>
@@ -176,7 +177,7 @@ button:disabled { opacity: .45; cursor: default; }
   const state = {
     mode: 'sample', ctx: null, analyser: null, stream: null, src: null, test: null, testRing: true,
     range: 'voice', buf: null, tbuf: null, binHz: 48000 / FFT, sprEma: null, hist: [], quietSince: 0,
-    wake: null, raf: 0, rec: null, recCount: 0,
+    wake: null, raf: 0, rec: null, zeroFrames: 0,
   };
 
   // ---------- the target shape (dB below the strongest peak), a rough guide ----------
@@ -381,6 +382,8 @@ button:disabled { opacity: .45; cursor: default; }
     state.analyser.getFloatTimeDomainData(state.tbuf);
     let s = 0; for (let i = 0; i < state.tbuf.length; i++) s += state.tbuf[i] * state.tbuf[i];
     const levelDb = 10 * Math.log10(s / state.tbuf.length + 1e-12);
+    // a real mic never gives exact zeros; about two seconds of them means the input has died
+    if (state.mode === 'mic' && s === 0) { if (++state.zeroFrames > 120) { state.zeroFrames = 0; revive(); } } else state.zeroFrames = 0;
     const r = analyse(state.buf, levelDb);
     if (r.voiced && isFinite(r.spr)) {
       state.sprEma = state.sprEma === null ? r.spr : state.sprEma + (r.spr - state.sprEma) * .2;
@@ -434,14 +437,17 @@ button:disabled { opacity: .45; cursor: default; }
 
   function showMsg(t) { const m = $('#msg'); m.textContent = t; m.hidden = !t; }
 
-  async function startMic() {
+  const withTimeout = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej({ name: 'Timeout' }), ms))]);
+
+  // auto = true when restarting by itself (no tap): give up quickly and let the caller ask for a tap
+  async function startMic(auto = false) {
     showMsg('');
-    if (!navigator.mediaDevices?.getUserMedia) { showMsg('このブラウザではマイクが使えません。https のページで開いてください。'); return; }
+    if (!navigator.mediaDevices?.getUserMedia) { showMsg('このブラウザではマイクが使えません。https のページで開いてください。'); return false; }
     try {
-      await ensureContext();
-      const stream = await navigator.mediaDevices.getUserMedia({
+      await withTimeout(ensureContext(), 3000);
+      const stream = await withTimeout(navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
-      });
+      }), auto ? 4000 : 60000);
       disconnectSources();
       state.stream = stream;
       state.src = state.ctx.createMediaStreamSource(stream);
@@ -452,10 +458,13 @@ button:disabled { opacity: .45; cursor: default; }
       track.addEventListener('ended', () => { if (state.stream === stream) needRestart(); });
       describeMic(track);
       run();
+      return true;
     } catch (e) {
+      if (auto) return false;
       showMsg(e && e.name === 'NotAllowedError'
         ? 'マイクが許可されませんでした。ブラウザの設定で、このページのマイクを許可してください。'
         : 'マイクを開けませんでした（' + (e && e.name || e) + '）。');
+      return false;
     }
   }
 
@@ -545,26 +554,24 @@ button:disabled { opacity: .45; cursor: default; }
 
   // ---------- coming back from another screen ----------
   // The OS may stop the mic or suspend the audio while the page is hidden. On return, check and restart.
-  let restartWanted = false;
-  function needRestart() { restartWanted = true; if (document.visibilityState === 'visible') revive(); }
+  // On a phone the mic can look alive but deliver only zeros after a return, so on every return
+  // the mic is opened again, and a watchdog in frame() also restarts it when it hears exact silence.
+  let reviving = false;
+  function needRestart() { if (document.visibilityState === 'visible') revive(); }
+  function askForTap() {
+    stop();
+    $('#startBtn').textContent = '再開する';
+    showMsg('別の画面から戻ったので止まりました。「再開する」を押してください。直らない時は「↻」で読み込み直してください。');
+  }
   async function revive() {
-    if (state.mode !== 'mic' && state.mode !== 'test') return;
-    try { if (state.ctx && state.ctx.state !== 'running') await state.ctx.resume(); } catch {}
-    const tr = state.stream?.getAudioTracks()[0];
-    const micDead = state.mode === 'mic' && (!tr || tr.readyState === 'ended' || tr.muted);
-    if (micDead || restartWanted) {
-      restartWanted = false;
-      const was = state.mode;
-      if (was === 'mic') await startMic(); else await startTest();
-    }
-    if (!state.ctx || state.ctx.state !== 'running') {
-      // the browser wants a tap before the audio can run again
-      stop();
-      $('#startBtn').textContent = '再開する';
-      showMsg('別の画面から戻ったので止まりました。「再開する」を押してください。');
-      return;
-    }
-    try { state.wake = await navigator.wakeLock?.request('screen'); } catch {}
+    if ((state.mode !== 'mic' && state.mode !== 'test') || reviving) return;
+    reviving = true;
+    try {
+      try { if (state.ctx && state.ctx.state !== 'running') await withTimeout(state.ctx.resume(), 1500); } catch {}
+      if (state.mode === 'mic') { if (!(await startMic(true))) { askForTap(); return; } }
+      if (!state.ctx || state.ctx.state !== 'running') { askForTap(); return; } // the browser wants a tap first
+      try { state.wake = await navigator.wakeLock?.request('screen'); } catch {}
+    } finally { reviving = false; state.zeroFrames = 0; }
   }
 
   async function run() {
@@ -591,6 +598,10 @@ button:disabled { opacity: .45; cursor: default; }
 
   $('#startBtn').addEventListener('click', () => (state.mode === 'mic' || state.mode === 'test') ? stop() : startMic());
   $('#recBtn').addEventListener('click', () => state.rec ? stopRec() : startRec());
+  $('#reloadBtn').addEventListener('click', () => {
+    if ($('#recs').children.length && !confirm('読み込み直すと、録音した音は消えます。先に「保存」してください。読み込み直しますか？')) return;
+    location.reload();
+  });
   $('#testBtn').addEventListener('click', () => { if (state.mode === 'test') state.testRing = !state.testRing; startTest(); });
   for (const [id, r] of [['#rangeVoice', 'voice'], ['#rangeWide', 'wide']]) {
     $(id).addEventListener('click', () => {
