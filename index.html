@@ -95,6 +95,16 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
 .mic b { color: var(--fg); font-weight: 600; }
 .mic .warn { color: var(--low); }
 .msg { font-size: .85rem; color: var(--low); }
+button.rec[aria-pressed="true"] { border-color: var(--low); color: var(--low); }
+button.rec .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--low); margin-right: 6px; vertical-align: 1px; }
+button.rec[aria-pressed="true"] .dot { animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+button:disabled { opacity: .45; cursor: default; }
+.recs { display: grid; gap: 8px; }
+.recs:empty { display: none; }
+.recs .item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.recs .name { font: .8rem var(--f-num); color: var(--muted); }
+.recs audio { width: 100%; max-width: 360px; height: 36px; }
 
 @media (max-width: 460px) { .big { font-size: 2.6rem; } #spec { height: 210px; } }
 @media (prefers-reduced-motion: reduce) { .needle { transition: none; } }
@@ -142,6 +152,7 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
 
   <section class="controls">
     <button id="startBtn" class="primary" type="button">はじめる</button>
+    <button id="recBtn" class="rec" type="button" aria-pressed="false" disabled><span class="dot"></span><span id="recLabel">録音</span></button>
     <button id="testBtn" type="button" aria-pressed="false">テスト音</button>
     <div class="seg" role="group" aria-label="表示する範囲">
       <button id="rangeVoice" type="button" aria-pressed="true">声 80Hz〜8kHz</button>
@@ -150,6 +161,7 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
   </section>
   <div id="micInfo" class="mic">マイクの状態は「はじめる」のあとに出ます。</div>
   <div id="msg" class="msg" hidden></div>
+  <section id="recs" class="panel recs" aria-label="録音"></section>
 
 </main>
 
@@ -164,7 +176,7 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
   const state = {
     mode: 'sample', ctx: null, analyser: null, stream: null, src: null, test: null, testRing: true,
     range: 'voice', buf: null, tbuf: null, binHz: 48000 / FFT, sprEma: null, hist: [], quietSince: 0,
-    wake: null, raf: 0,
+    wake: null, raf: 0, rec: null, recCount: 0,
   };
 
   // ---------- the target shape (dB below the strongest peak), a rough guide ----------
@@ -414,6 +426,7 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
   }
 
   function disconnectSources() {
+    stopRec();
     if (state.src) { try { state.src.disconnect(); } catch {} state.src = null; }
     if (state.stream) { state.stream.getTracks().forEach((t) => t.stop()); state.stream = null; }
     if (state.test) { try { state.test.osc.stop(); state.test.out.disconnect(); } catch {} state.test = null; }
@@ -434,7 +447,10 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
       state.src = state.ctx.createMediaStreamSource(stream);
       state.src.connect(state.analyser);
       state.mode = 'mic';
-      describeMic(stream.getAudioTracks()[0]);
+      const track = stream.getAudioTracks()[0];
+      // if the OS takes the mic away (another app, a call, the screen going off), come back to it on return
+      track.addEventListener('ended', () => { if (state.stream === stream) needRestart(); });
+      describeMic(track);
       run();
     } catch (e) {
       showMsg(e && e.name === 'NotAllowedError'
@@ -473,9 +489,88 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
     run();
   }
 
+  // ---------- recording (the raw mic, before any analysis) ----------
+  function recType() {
+    if (!window.MediaRecorder) return null;
+    for (const t of ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'])
+      if (MediaRecorder.isTypeSupported?.(t)) return t;
+    return '';
+  }
+  const fmtClock = (ms) => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  function recUi() {
+    const on = !!state.rec, btn = $('#recBtn');
+    btn.disabled = state.mode !== 'mic' || recType() === null;
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    $('#recLabel').textContent = on ? '録音を止める ' + fmtClock(performance.now() - state.rec.t0) : '録音';
+  }
+  function startRec() {
+    if (state.mode !== 'mic' || !state.stream || state.rec) return;
+    const type = recType();
+    if (type === null) { showMsg('このブラウザでは録音できません。'); return; }
+    let mr;
+    try { mr = new MediaRecorder(state.stream, type ? { mimeType: type, audioBitsPerSecond: 128000 } : undefined); }
+    catch (e) { showMsg('録音を始められませんでした（' + (e && e.name || e) + '）。'); return; }
+    const chunks = [];
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => { if (chunks.length) addRecording(new Blob(chunks, { type: mr.mimeType || type || 'audio/webm' })); };
+    mr.start(1000);
+    state.rec = { mr, t0: performance.now(), timer: setInterval(recUi, 250) };
+    recUi();
+  }
+  function stopRec() {
+    if (!state.rec) return;
+    const { mr, timer } = state.rec; state.rec = null; clearInterval(timer);
+    try { if (mr.state !== 'inactive') mr.stop(); } catch {}
+    recUi();
+  }
+  function addRecording(blob) {
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    const ext = /mp4|aac|m4a/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
+    const name = `hibiki_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
+    const url = URL.createObjectURL(blob);
+    const item = document.createElement('div'); item.className = 'item';
+    const audio = document.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = url;
+    const save = document.createElement('button'); save.type = 'button'; save.textContent = '保存';
+    save.addEventListener('click', async () => {
+      const file = new File([blob], name, { type: blob.type });
+      if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    });
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = '消す';
+    del.addEventListener('click', () => { URL.revokeObjectURL(url); item.remove(); });
+    const label = document.createElement('span'); label.className = 'name'; label.textContent = name;
+    item.append(audio, save, del, label);
+    $('#recs').prepend(item);
+  }
+
+  // ---------- coming back from another screen ----------
+  // The OS may stop the mic or suspend the audio while the page is hidden. On return, check and restart.
+  let restartWanted = false;
+  function needRestart() { restartWanted = true; if (document.visibilityState === 'visible') revive(); }
+  async function revive() {
+    if (state.mode !== 'mic' && state.mode !== 'test') return;
+    try { if (state.ctx && state.ctx.state !== 'running') await state.ctx.resume(); } catch {}
+    const tr = state.stream?.getAudioTracks()[0];
+    const micDead = state.mode === 'mic' && (!tr || tr.readyState === 'ended' || tr.muted);
+    if (micDead || restartWanted) {
+      restartWanted = false;
+      const was = state.mode;
+      if (was === 'mic') await startMic(); else await startTest();
+    }
+    if (!state.ctx || state.ctx.state !== 'running') {
+      // the browser wants a tap before the audio can run again
+      stop();
+      $('#startBtn').textContent = '再開する';
+      showMsg('別の画面から戻ったので止まりました。「再開する」を押してください。');
+      return;
+    }
+    try { state.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+
   async function run() {
     $('#modeBadge').textContent = state.mode === 'mic' ? 'マイク' : 'テスト音';
     $('#startBtn').textContent = '止める';
+    recUi();
     $('#testBtn').setAttribute('aria-pressed', state.mode === 'test' ? 'true' : 'false');
     $('#testBtn').textContent = state.mode === 'test' ? (state.testRing ? 'テスト音：響きあり' : 'テスト音：響きなし') : 'テスト音';
     state.hist = []; state.sprEma = null; state.quietSince = 0;
@@ -490,10 +585,12 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
     $('#startBtn').textContent = 'はじめる';
     $('#testBtn').setAttribute('aria-pressed', 'false'); $('#testBtn').textContent = 'テスト音';
     $('#modeBadge').textContent = '止めています';
+    recUi();
     try { state.wake?.release(); } catch {} state.wake = null;
   }
 
   $('#startBtn').addEventListener('click', () => (state.mode === 'mic' || state.mode === 'test') ? stop() : startMic());
+  $('#recBtn').addEventListener('click', () => state.rec ? stopRec() : startRec());
   $('#testBtn').addEventListener('click', () => { if (state.mode === 'test') state.testRing = !state.testRing; startTest(); });
   for (const [id, r] of [['#rangeVoice', 'voice'], ['#rangeWide', 'wide']]) {
     $(id).addEventListener('click', () => {
@@ -502,11 +599,11 @@ button[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
       if (state.mode === 'sample') drawAll(); else if (state.mode === 'stopped') drawSpectrum(state.buf);
     });
   }
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible' && (state.mode === 'mic' || state.mode === 'test')) {
-      try { await state.ctx?.resume(); state.wake = await navigator.wakeLock?.request('screen'); } catch {}
-    }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { stopRec(); return; } // keep what was recorded before leaving
+    revive();
   });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) revive(); });
   new ResizeObserver(() => { if (state.mode === 'sample') drawAll(); else if (state.mode === 'stopped') { drawSpectrum(state.buf); drawHistory(performance.now()); } }).observe(spec);
 
   // start in the sample view
